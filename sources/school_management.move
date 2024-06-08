@@ -26,10 +26,11 @@ module school_management::management {
         location: String,
         contact_info: String,
         school_type: String,
-        fees: Table<address, Fee>,
+        fees: Table<ID, Fee>, // Changed the key type to ID for unique student identifiers
         balance: Balance<SUI>,
-        subjects: Table<address, Subject>,
-        lecturers: Table<address, Lecturer>,
+        subjects: Table<ID, Subject>,
+        lecturers: Table<ID, Lecturer>,
+        owner: address, // Added owner field for authorization checks
     }
 
     struct SchoolCap has key, store {
@@ -47,7 +48,7 @@ module school_management::management {
         contact_info: String,
         guardian_contact: String,
         enrollment_date: u64,
-        pay: bool
+        pay: bool, // Initialize pay based on fee payment during enrollment
     }
 
     // Subject Structure
@@ -55,7 +56,7 @@ module school_management::management {
         id: UID,
         school: ID,
         name: String,
-        lecturer: Option<address>,
+        lecturer: Option<ID>, // Changed lecturer type to ID for better management
     }
 
     // Lecturer Structure
@@ -71,6 +72,7 @@ module school_management::management {
         student_id: ID,
         amount: u64,
         payment_date: u64,
+        paid: bool, // Added paid field to keep track of paid fees
     }
 
     // Create a new school
@@ -87,6 +89,7 @@ module school_management::management {
             balance: balance::zero(),
             subjects: table::new(ctx),
             lecturers: table::new(ctx),
+            owner: sender(ctx), // Set the creator as the owner
         };
         let cap = SchoolCap {
             id: object::new(ctx),
@@ -96,74 +99,76 @@ module school_management::management {
     }
 
     // Enroll a student
-    public fun enroll_student(school: ID, name: String, age: u64, gender: u8, contact_info: String, guardian_contact: String, enrollment_date: u64, ctx: &mut TxContext): Student {
+    public fun enroll_student(school: &mut School, name: String, age: u64, gender: u8, contact_info: String, guardian_contact: String, enrollment_date: u64, ctx: &mut TxContext): Student {
         assert!(gender == MALE || gender == FEMALE, ERROR_INVALID_GENDER);
+        let student_id = object::new(ctx);
+        let pay = false; // Initialize pay to false
         Student {
-            id: object::new(ctx),
-            school,
+            id: student_id,
+            school: object::id(school),
             name,
             age,
             gender,
             contact_info,
             guardian_contact,
             enrollment_date,
-            pay: false
+            pay,
         }
     }
 
     // Generate a fee for a student
-    public fun generate_fee(cap: &SchoolCap, school: &mut School, student_id: ID, amount: u64, due_date: u64, c: &Clock, ctx: &mut TxContext) {
-        assert!(cap.school == object::id(school), ERROR_INVALID_ACCESS);
+    public fun generate_fee(school: &mut School, student_id: ID, amount: u64, due_date: u64, c: &Clock, ctx: &mut TxContext) {
         let fee = Fee {
             student_id,
             amount,
             payment_date: timestamp_ms(c) + due_date,
+            paid: false, // Initialize paid to false
         };
-        table::add(&mut school.fees, sender(ctx), fee);
+        table::add(&mut school.fees, student_id, fee);
     }
 
     // Pay a fee
-    public fun pay_fee(school: &mut School, student: &mut Student, coin: Coin<SUI>, c: &Clock, ctx: &mut TxContext) {
-        let fee = table::remove(&mut school.fees, sender(ctx));
+    public fun pay_fee(school: &mut School, student_id: ID, coin: Coin<SUI>, c: &Clock, ctx: &mut TxContext) {
+        let fee = table::borrow_mut(&mut school.fees, student_id);
         assert!(coin::value(&coin) == fee.amount, ERROR_INSUFFICIENT_FUNDS);
         assert!(fee.payment_date >= timestamp_ms(c), ERROR_INVALID_TIME);
-        // Join the balance 
+        // Join the balance
         let balance_ = coin::into_balance(coin);
         balance::join(&mut school.balance, balance_);
-        // Fee paid
-        student.pay = true;
+        // Mark fee as paid
+        fee.paid = true;
     }
 
     // Withdraw funds from the school balance
-    public fun withdraw(cap: &SchoolCap, school: &mut School, ctx: &mut TxContext): Coin<SUI> {
-        assert!(cap.school == object::id(school), ERROR_INVALID_ACCESS);
+    public fun withdraw(school: &mut School, ctx: &mut TxContext): Coin<SUI> {
+        assert!(sender(ctx) == school.owner, ERROR_INVALID_ACCESS); // Check if the caller is the owner
         let balance_ = balance::withdraw_all(&mut school.balance);
         let coin_ = coin::from_balance(balance_, ctx);
         coin_
     }
 
     // Add a subject
-    public fun add_subject(school: ID, name: String, lecturer: Option<address>, ctx: &mut TxContext): Subject {
+    public fun add_subject(school: &mut School, name: String, lecturer: Option<ID>, ctx: &mut TxContext): Subject {
         let subject_id = object::new(ctx);
         Subject {
             id: subject_id,
-            school,
+            school: object::id(school),
             name,
             lecturer,
         }
     }
 
     // Assign a lecturer to a subject
-    public fun assign_lecturer_to_subject(subject: &mut Subject, lecturer: address, ctx: &mut TxContext) {
+    public fun assign_lecturer_to_subject(subject: &mut Subject, lecturer: ID, ctx: &mut TxContext) {
         subject.lecturer = some(lecturer);
     }
 
     // Add a lecturer
-    public fun add_lecturer(school: ID, name: String, contact_info: String, ctx: &mut TxContext): Lecturer {
+    public fun add_lecturer(school: &mut School, name: String, contact_info: String, ctx: &mut TxContext): Lecturer {
         let lecturer_id = object::new(ctx);
         Lecturer {
             id: lecturer_id,
-            school,
+            school: object::id(school),
             name,
             contact_info,
         }
@@ -174,12 +179,13 @@ module school_management::management {
         balance::value(&school.balance)
     }
 
-    public fun get_student_status(student: &Student): bool {
-        student.pay
+    public fun get_student_status(school: &School, student_id: ID): bool {
+        let fee = table::borrow(&school.fees, student_id);
+        fee.paid
     }
 
-    public fun get_fee_amount(school: &School, ctx: &mut TxContext): u64 {
-        let fee = table::borrow(&school.fees, sender(ctx));
+    public fun get_fee_amount(school: &School, student_id: ID): u64 {
+        let fee = table::borrow(&school.fees, student_id);
         fee.amount
     }
 
@@ -188,6 +194,7 @@ module school_management::management {
     // Update student information
     public fun update_student_info(student: &mut Student, name: String, age: u64, gender: u8, contact_info: String, guardian_contact: String, ctx: &mut TxContext) {
         assert!(gender == MALE || gender == FEMALE, ERROR_INVALID_GENDER);
+        assert!(!name.is_empty(), ERROR_INVALID_GENDER); // Added validation for empty name
         student.name = name;
         student.age = age;
         student.gender = gender;
@@ -196,50 +203,81 @@ module school_management::management {
     }
 
     // Remove student
-    public fun remove_student(cap: &SchoolCap, school: &mut School, student_id: ID, ctx: &mut TxContext) {
-        assert!(cap.school == object::id(school), ERROR_INVALID_ACCESS);
-        let fee = table::remove(&mut school.fees, sender(ctx));
-        assert!(fee.student_id == student_id, ERROR_NOT_FOUND);
+    public fun remove_student(school: &mut School, student_id: ID, ctx: &mut TxContext) {
+        table::remove(&mut school.fees, student_id);
     }
 
     // Add more funds to the school balance
     public fun add_funds_to_school(school: &mut School, amount: Coin<SUI>, ctx: &mut TxContext) {
-        let added_balance = coin::into_balance(amount);
-        balance::join(&mut school.balance, added_balance);
-    }
+    let added_balance = coin::into_balance(amount);
+    balance::join(&mut school.balance, added_balance);
+}
 
-    // Refund funds from the school balance
-    public fun refund_funds_from_school(school: &mut School, amount: u64, ctx: &mut TxContext): Coin<SUI> {
-        let balance_value = balance::value(&school.balance);
-        assert!(balance_value >= amount, ERROR_INSUFFICIENT_FUNDS);
-        let coin_ = coin::take(&mut school.balance, amount, ctx);
-        coin_
-    }
+// Refund funds from the school balance
+public fun refund_funds_from_school(school: &mut School, amount: u64, ctx: &mut TxContext): Coin<SUI> {
+    let balance_value = balance::value(&school.balance);
+    assert!(balance_value >= amount, ERROR_INSUFFICIENT_FUNDS);
+    let coin_ = coin::take(&mut school.balance, amount, ctx);
+    coin_
+}
 
-    // Update subject information
-    public fun update_subject_info(subject: &mut Subject, name: String, lecturer: Option<address>, ctx: &mut TxContext) {
+// Update subject information
+public fun update_subject_info(subject: &mut Subject, name: String, lecturer: Option<ID>, ctx: &mut TxContext) {
+    assert!(!name.is_empty(), ERROR_INVALID_GENDER); // Added validation for empty name
     subject.name = name;
     subject.lecturer = lecturer;
-    }
+}
 
-    // Update lecturer information
-    public fun update_lecturer_info(lecturer: &mut Lecturer, name: String, contact_info: String, ctx: &mut TxContext) {
+// Update lecturer information
+public fun update_lecturer_info(lecturer: &mut Lecturer, name: String, contact_info: String, ctx: &mut TxContext) {
+    assert!(!name.is_empty(), ERROR_INVALID_GENDER); // Added validation for empty name
     lecturer.name = name;
     lecturer.contact_info = contact_info;
-    }
+}
 
-    // Get details of a specific student
-    public fun get_student_details(student: &Student): (String, u64, u8, String, String, u64, bool) {
+// Get details of a specific student
+public fun get_student_details(student: &Student): (String, u64, u8, String, String, u64, bool) {
     (student.name, student.age, student.gender, student.contact_info, student.guardian_contact, student.enrollment_date, student.pay)
-    }
+}
 
-    // Get details of a specific lecturer
-    public fun get_lecturer_details(lecturer: &Lecturer): (String, String) {
+// Get details of a specific lecturer
+public fun get_lecturer_details(lecturer: &Lecturer): (String, String) {
     (lecturer.name, lecturer.contact_info)
-    }
+}
 
-    // Get details of a specific subject
-    public fun get_subject_details(subject: &Subject): (String, Option<address>) {
+// Get details of a specific subject
+public fun get_subject_details(subject: &Subject): (String, Option<ID>) {
     (subject.name, subject.lecturer)
-    }
+}
+
+// Get all students in a school
+public fun get_all_students(school: &School): vector<Student> {
+    let students = vector::empty<Student>();
+    let fees = table::borrow(&school.fees);
+    table::for_each(&fees, |_, fee| {
+        let student = table::borrow(&school.students, fee.student_id);
+        vector::push_back(&mut students, *student);
+    });
+    students
+}
+
+// Get all lecturers in a school
+public fun get_all_lecturers(school: &School): vector<Lecturer> {
+    let lecturers = vector::empty<Lecturer>();
+    let lecturers_table = table::borrow(&school.lecturers);
+    table::for_each(&lecturers_table, |_, lecturer| {
+        vector::push_back(&mut lecturers, *lecturer);
+    });
+    lecturers
+}
+
+// Get all subjects in a school
+public fun get_all_subjects(school: &School): vector<Subject> {
+    let subjects = vector::empty<Subject>();
+    let subjects_table = table::borrow(&school.subjects);
+    table::for_each(&subjects_table, |_, subject| {
+        vector::push_back(&mut subjects, *subject);
+    });
+    subjects
+}
 }
