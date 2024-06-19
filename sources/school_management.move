@@ -1,14 +1,14 @@
 #[allow(unused_variable)]
 module school_management::management {
-    use sui::object::{Self, UID, ID};
+    use sui::object::{self, UID, ID};
     use sui::tx_context::{TxContext, sender};
     use sui::clock::{Clock, timestamp_ms};
-    use sui::balance::{Self, Balance};
+    use sui::balance::{self, Balance};
     use sui::sui::{SUI};
-    use sui::coin::{Self, Coin};
-    use sui::table::{Self, Table};
+    use sui::coin::{self, Coin};
+    use sui::table::{self, Table};
     use std::string::{String};
-    use std::option::{Option, some};
+    use std::option::{self, Option, some};
 
     const MALE: u8 = 0;
     const FEMALE: u8 = 1;
@@ -47,7 +47,7 @@ module school_management::management {
         contact_info: String,
         guardian_contact: String,
         enrollment_date: u64,
-        pay: bool
+        pay: bool,
     }
 
     // Subject Structure
@@ -75,10 +75,10 @@ module school_management::management {
 
     // Create a new school
     public fun create_school(name: String, location: String, contact_info: String, school_type: String, ctx: &mut TxContext): (School, SchoolCap) {
-        let id_ = object::new(ctx);
-        let inner_ = object::uid_to_inner(&id_);
+        let id = object::new(ctx);
+        let inner_id = object::uid_to_inner(&id);
         let school = School {
-            id: id_,
+            id,
             name,
             location,
             contact_info,
@@ -90,7 +90,7 @@ module school_management::management {
         };
         let cap = SchoolCap {
             id: object::new(ctx),
-            school: inner_,
+            school: inner_id,
         };
         (school, cap)
     }
@@ -107,7 +107,7 @@ module school_management::management {
             contact_info,
             guardian_contact,
             enrollment_date,
-            pay: false
+            pay: false,
         }
     }
 
@@ -127,19 +127,16 @@ module school_management::management {
         let fee = table::remove(&mut school.fees, sender(ctx));
         assert!(coin::value(&coin) == fee.amount, ERROR_INSUFFICIENT_FUNDS);
         assert!(fee.payment_date >= timestamp_ms(c), ERROR_INVALID_TIME);
-        // Join the balance 
-        let balance_ = coin::into_balance(coin);
-        balance::join(&mut school.balance, balance_);
-        // Fee paid
+        let balance = coin::into_balance(coin);
+        balance::join(&mut school.balance, balance);
         student.pay = true;
     }
 
     // Withdraw funds from the school balance
     public fun withdraw(cap: &SchoolCap, school: &mut School, ctx: &mut TxContext): Coin<SUI> {
         assert!(cap.school == object::id(school), ERROR_INVALID_ACCESS);
-        let balance_ = balance::withdraw_all(&mut school.balance);
-        let coin_ = coin::from_balance(balance_, ctx);
-        coin_
+        let balance = balance::withdraw_all(&mut school.balance);
+        coin::from_balance(balance, ctx)
     }
 
     // Add a subject
@@ -169,7 +166,7 @@ module school_management::management {
         }
     }
 
-    // =================== Public view functions ===================
+    // Public view functions
     public fun get_school_balance(school: &School): u64 {
         balance::value(&school.balance)
     }
@@ -183,7 +180,7 @@ module school_management::management {
         fee.amount
     }
 
-    // =================== CRUD Operations ===================
+    // CRUD Operations
 
     // Update student information
     public fun update_student_info(student: &mut Student, name: String, age: u64, gender: u8, contact_info: String, guardian_contact: String, ctx: &mut TxContext) {
@@ -212,34 +209,46 @@ module school_management::management {
     public fun refund_funds_from_school(school: &mut School, amount: u64, ctx: &mut TxContext): Coin<SUI> {
         let balance_value = balance::value(&school.balance);
         assert!(balance_value >= amount, ERROR_INSUFFICIENT_FUNDS);
-        let coin_ = coin::take(&mut school.balance, amount, ctx);
-        coin_
+        coin::take(&mut school.balance, amount, ctx)
     }
 
     // Update subject information
     public fun update_subject_info(subject: &mut Subject, name: String, lecturer: Option<address>, ctx: &mut TxContext) {
-    subject.name = name;
-    subject.lecturer = lecturer;
+        subject.name = name;
+        subject.lecturer = lecturer;
     }
 
     // Update lecturer information
     public fun update_lecturer_info(lecturer: &mut Lecturer, name: String, contact_info: String, ctx: &mut TxContext) {
-    lecturer.name = name;
-    lecturer.contact_info = contact_info;
+        lecturer.name = name;
+        lecturer.contact_info = contact_info;
     }
 
     // Get details of a specific student
     public fun get_student_details(student: &Student): (String, u64, u8, String, String, u64, bool) {
-    (student.name, student.age, student.gender, student.contact_info, student.guardian_contact, student.enrollment_date, student.pay)
+        (
+            student.name,
+            student.age,
+            student.gender,
+            student.contact_info,
+            student.guardian_contact,
+            student.enrollment_date,
+            student.pay
+        )
     }
 
     // Get details of a specific lecturer
     public fun get_lecturer_details(lecturer: &Lecturer): (String, String) {
-    (lecturer.name, lecturer.contact_info)
+        (lecturer.name, lecturer.contact_info)
     }
 
     // Get details of a specific subject
     public fun get_subject_details(subject: &Subject): (String, Option<address>) {
-    (subject.name, subject.lecturer)
+        (subject.name, subject.lecturer)
+    }
+
+    // New Feature: Transfer student to another school
+    public entry fun transfer_student_to_another_school(student: &mut Student, new_school: ID, ctx: &mut TxContext) {
+        student.school = new_school;
     }
 }
